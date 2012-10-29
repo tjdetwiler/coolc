@@ -133,11 +133,34 @@
     %type <program> program
     %type <classes> class_list
     %type <class_> class
-    
-    /* You will want to change the following line. */
-    %type <features> dummy_feature_list
+    %type <features> feature_list
+    %type <feature> feature
+    %type <formals> formal_list
+    %type <formals> formal_list_follow
+    %type <formal> formal
+    %type <case_> case
+    %type <cases> cases
+    %type <cases> cases_follow
+    %type <expressions> expr_list
+    %type <expression> expr
+    %type <expressions> arg_list
+    %type <expressions> arg_list_follow
+    %type <expression> let_attr_list_follow
+
+    %type <symbol> opt_inherits
+    %type <expression> opt_else
+    %type <expression> opt_init
     
     /* Precedence declarations go here. */
+    %left '.'
+    %left '@'
+    %left '~'
+    %left ISVOID
+    %left '*' '/'
+    %left '+' '-'
+    %nonassoc LE '<' '='
+    %left NOT
+    %right ASSIGN
     
     
     %%
@@ -146,28 +169,184 @@
     */
     program	: class_list	{ @$ = @1; ast_root = program($1); }
     ;
-    
+
     class_list
-    : class			/* single class */
-    { $$ = single_Classes($1);
-    parse_results = $$; }
+    : class
+      {
+        $$ = single_Classes($1);
+        parse_results = $$;
+      }
     | class_list class	/* several classes */
-    { $$ = append_Classes($1,single_Classes($2)); 
-    parse_results = $$; }
+      {
+        $$ = append_Classes($1,single_Classes($2)); 
+        parse_results = $$;
+      }
     ;
     
-    /* If no parent is specified, the class inherits from the Object class. */
-    class	: CLASS TYPEID '{' dummy_feature_list '}' ';'
-    { $$ = class_($2,idtable.add_string("Object"),$4,
-    stringtable.add_string(curr_filename)); }
-    | CLASS TYPEID INHERITS TYPEID '{' dummy_feature_list '}' ';'
-    { $$ = class_($2,$4,$6,stringtable.add_string(curr_filename)); }
+    /** opt_inherits will return either the entry of the requested super
+     *  class, or the entry for Object if none is specified. */
+    class
+      : CLASS TYPEID opt_inherits '{' feature_list '}' ';'
+        { $$ = class_($2,$3,$5, stringtable.add_string(curr_filename)); }
+      | CLASS TYPEID opt_inherits '{' '}' ';'
+        { $$ = class_($2,$3,nil_Features(), stringtable.add_string(curr_filename)); }
     ;
-    
-    /* Feature list may be empty, but no empty features in list. */
-    dummy_feature_list:		/* empty */
-    {  $$ = nil_Features(); }
-    
+
+    opt_inherits
+    : INHERITS TYPEID
+      { $$ = $2; }
+    |
+      { $$ = idtable.add_string("Object"); }
+    ;
+
+    feature_list
+    : feature ';'
+      { $$ = single_Features($1); }
+    | feature_list feature ';'
+      { $$ = append_Features($1, single_Features($2)); }
+    /*
+    |
+      { $$ = nil_Features(); }
+    */
+    ;
+
+    feature
+    : OBJECTID ':' TYPEID opt_init
+      { $$ = attr($1, $3, $4); }
+    | OBJECTID '(' formal_list ')' ':' TYPEID '{' expr '}'
+      { $$ = method($1, $3, $6, $8); }
+    ;
+
+    formal
+    : OBJECTID ':' TYPEID
+      { $$ = formal($1, $3); }
+    ;
+
+    formal_list
+    : formal formal_list_follow
+      { $$ = append_Formals($2, single_Formals($1)); }
+    |
+      { $$ = nil_Formals(); }
+    ;
+
+    formal_list_follow
+    : ',' formal formal_list_follow
+      { $$ = append_Formals($3, single_Formals($2)); }
+    |
+      { $$ = nil_Formals(); }
+    ;
+
+    expr_list
+    : expr_list expr ';'
+      { $$ = append_Expressions($1, single_Expressions($2)); }
+    |
+      { $$ = nil_Expressions(); }
+    ;
+
+    arg_list
+    : expr arg_list_follow
+      { $$ = append_Expressions($2, single_Expressions($1)); }
+    |
+      { $$ = nil_Expressions(); }
+    ;
+
+    arg_list_follow
+    : ',' expr arg_list_follow
+      { $$ = append_Expressions($3, single_Expressions($2)); }
+    |
+      { $$ = nil_Expressions(); }
+    ;
+
+    case
+    : OBJECTID ':' TYPEID DARROW expr ';'
+      { $$ = branch($1, $3, $5); }
+    ;
+
+    cases
+    : case cases_follow
+      { $$ = append_Cases($2, single_Cases($1)); }
+    |
+      { $$ = nil_Cases(); }
+    ;
+
+    cases_follow
+    : cases_follow case
+      { $$ = append_Cases($1, single_Cases($2)); }
+    |
+      { $$ = nil_Cases(); }
+    ;
+
+    let_attr_list_follow
+    : ',' OBJECTID ':' TYPEID opt_init let_attr_list_follow
+      { $$ = let($2, $4, $5, $6); }
+    | IN expr
+      { $$ = $2; }
+
+    expr
+    : OBJECTID ASSIGN expr
+      { $$ = assign($1, $3); }
+    | expr '@' TYPEID '.' OBJECTID '(' arg_list ')'
+      { $$ = static_dispatch($1, $3, $5, $7); }
+    | expr '.' OBJECTID '(' arg_list ')'
+      { $$ = static_dispatch($1, idtable.add_string("SELF_TYPE"), $3, $5); }
+    | OBJECTID '(' arg_list ')'
+      { $$ = dispatch(object(idtable.add_string("self")), $1, $3); }
+    | IF expr THEN expr opt_else
+      { $$ = cond($2, $4, $5); }
+    | WHILE expr LOOP expr POOL
+      { $$ = loop($2, $4); }
+    | '{' expr_list '}'
+      { $$ = block($2); }
+    | LET OBJECTID ':' TYPEID opt_init let_attr_list_follow
+      { $$ = let($2, $4, $5, $6); }
+    | CASE expr OF cases ESAC
+      { $$ = typcase($2, $4); }
+    | NEW TYPEID
+      { $$ = new_($2); }
+    | ISVOID expr
+      { $$ = isvoid($2); }
+    | expr '+' expr
+      { $$ = plus($1, $3); }
+    | expr '-' expr
+      { $$ = sub($1, $3); }
+    | expr '*' expr
+      { $$ = mul($1, $3); }
+    | expr '/' expr
+      { $$ = divide($1, $3); }
+    | '~' expr
+      { $$ = neg($2); }
+    | expr '<' expr
+      { $$ = lt($1, $3); }
+    | expr LE expr
+      { $$ = leq($1, $3); }
+    | expr '=' expr
+      { $$ = eq($1, $3); }
+    | NOT expr
+      { $$ = comp($2); }
+    | '(' expr ')'
+      { $$ = $2; }
+    | OBJECTID
+      { $$ = object($1); }
+    | INT_CONST
+      { $$ = int_const($1); }
+    | STR_CONST
+      { $$ = string_const($1); }
+    | BOOL_CONST
+      { $$ = bool_const($1); }
+    ;
+
+    opt_else
+    : ELSE expr FI
+      { $$ = $2; }
+    | FI
+      { $$ = no_expr(); }
+    ;
+
+    opt_init
+    : ASSIGN expr
+      { $$ = $2; }
+    |
+      { $$ = no_expr(); }
     
     /* end of grammar */
     %%
